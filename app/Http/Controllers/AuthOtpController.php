@@ -33,7 +33,12 @@ class AuthOtpController extends Controller
 
          # Return With OTP as JSON if request expects JSON
         if ($request->expectsJson()) {
-            return response()->json(['success' => $message, 'otp' => $verificationCode->otp]);
+            return response()->json([
+                'success' => $message, 
+                'otp' => (int) $verificationCode->otp,
+                'user_id' => $verificationCode->user_id,
+                'expires_at' => $verificationCode->expired_at->toDateTimeString()
+            ]);
         }
 
         # Otherwise, redirect to the verification page
@@ -44,19 +49,15 @@ class AuthOtpController extends Controller
     {
         $user = User::where('mobile_no', $mobile_no)->first();
 
-        # User Does not Have Any Existing OTP
-        $verificationCode = VerificationCode::where('user_id', $user->id)->latest()->first();
+        # Expire all previous OTPs for this user
+        VerificationCode::where('user_id', $user->id)
+            ->where('expired_at', '>', Carbon::now())
+            ->update(['expired_at' => Carbon::now()]);
 
-        $now = Carbon::now();
-
-        if ($verificationCode && $now->isBefore($verificationCode->expired_at)) {
-            return $verificationCode;
-        }
-
-        // Create a New OTP
+        // Always create a new OTP for every login attempt
         return VerificationCode::create([
             'user_id' => $user->id,
-            'otp' => rand(123456, 999999),
+            'otp' => rand(100000, 999999), // Ensure 6-digit integer
             'expired_at' => Carbon::now()->addMinutes(10)
         ]);
     }
@@ -81,8 +82,14 @@ class AuthOtpController extends Controller
 
         $now = Carbon::now();
         if (!$verificationCode) {
+            if ($request->expectsJson()) {
+                return response()->json(['error' => 'Your OTP is not correct'], 400);
+            }
             return redirect()->back()->with('error', 'Your OTP is not correct');
         } elseif ($verificationCode && $now->isAfter($verificationCode->expired_at)) {
+            if ($request->expectsJson()) {
+                return response()->json(['error' => 'Your OTP has been expired'], 401);
+            }
             return redirect()->route('otp.login')->with('error', 'Your OTP has been expired');
         }
 
@@ -96,9 +103,24 @@ class AuthOtpController extends Controller
 
             Auth::login($user);
 
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => 'Login successful',
+                    'user' => [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'email' => $user->email,
+                        'mobile_no' => $user->mobile_no
+                    ]
+                ]);
+            }
+
             return redirect('/home');
         }
 
+        if ($request->expectsJson()) {
+            return response()->json(['error' => 'Your OTP is not correct'], 400);
+        }
         return redirect()->route('otp.login')->with('error', 'Your Otp is not correct');
     }
 

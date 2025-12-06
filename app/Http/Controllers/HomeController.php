@@ -43,7 +43,7 @@ class HomeController extends Controller
         ]);
 
         //Match the Old Password
-        if(Hash::check($request->old_password, auth()->user()->password)){
+        if(!Hash::check($request->old_password, auth()->user()->password)){
             return back()->with("error", "Old Password Doesn't Match!");
         }
 

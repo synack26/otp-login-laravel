@@ -1,0 +1,12 @@
+*.log
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+bootstrap/cache/*
+vendor/
+node_modules/
+.env.local
+.env.production.local
+.DS_Store
+Thumbs.db
