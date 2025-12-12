@@ -5,12 +5,19 @@ namespace App\Http\Controllers;
 use Carbon\Carbon;
 use App\Models\User;
 use Illuminate\Http\Request;
-use App\Models\VerificationCode;
+use App\Services\OtpService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Session;
 
 class AuthOtpController extends Controller
 {
+    protected $otpService;
+
+    public function __construct(OtpService $otpService)
+    {
+        $this->otpService = $otpService;
+    }
+
     // Return View of OTP Login Page
     public function login()
     {
@@ -22,44 +29,27 @@ class AuthOtpController extends Controller
     {
         # Validate Data
         $request->validate([
-            'mobile_no' => 'required|exists:users,mobile_no'
+            'email' => 'required|email|exists:users,email'
         ]);
 
         # Generate An OTP
-        $verificationCode = $this->generateOtp($request->mobile_no);
+        $user = User::where('email', $request->email)->first();
+        $otpData = $this->otpService->generateOtp($user->id);
 
-        //$message = "Your OTP To Login is - " . $verificationCode->otp;
         $message = "Enter your OTP to login";
 
          # Return With OTP as JSON if request expects JSON
         if ($request->expectsJson()) {
             return response()->json([
                 'success' => $message, 
-                'otp' => (int) $verificationCode->otp,
-                'user_id' => $verificationCode->user_id,
-                'expires_at' => $verificationCode->expired_at->toDateTimeString()
+                'otp' => (int) $otpData['otp'],
+                'user_id' => $otpData['user_id'],
+                'expires_at' => $otpData['expired_at']->toDateTimeString()
             ]);
         }
 
         # Otherwise, redirect to the verification page
-        return redirect()->route('otp.verification', ['user_id' => $verificationCode->user_id])->with('success', $message);
-    }
-
-    public function generateOtp($mobile_no)
-    {
-        $user = User::where('mobile_no', $mobile_no)->first();
-
-        # Expire all previous OTPs for this user
-        VerificationCode::where('user_id', $user->id)
-            ->where('expired_at', '>', Carbon::now())
-            ->update(['expired_at' => Carbon::now()]);
-
-        // Always create a new OTP for every login attempt
-        return VerificationCode::create([
-            'user_id' => $user->id,
-            'otp' => rand(100000, 999999), // Ensure 6-digit integer
-            'expired_at' => Carbon::now()->addMinutes(10)
-        ]);
+        return redirect()->route('otp.verification', ['user_id' => $otpData['user_id']])->with('success', $message);
     }
 
     public function verification($user_id)
@@ -77,29 +67,28 @@ class AuthOtpController extends Controller
             'otp' => 'required'
         ]);
 
-        #Validation Logic
-        $verificationCode = VerificationCode::where('user_id', $request->user_id)->where('otp', $request->otp)->first();
-
-        $now = Carbon::now();
-        if (!$verificationCode) {
+        #Validation Logic - Check if OTP exists in Redis
+        if (!$this->otpService->verifyOtp($request->user_id, $request->otp)) {
+            // Check if OTP is expired
+            if ($this->otpService->isExpired($request->user_id)) {
+                if ($request->expectsJson()) {
+                    return response()->json(['error' => 'Your OTP has been expired'], 401);
+                }
+                return redirect()->route('otp.login')->with('error', 'Your OTP has been expired');
+            }
+            
+            // OTP is incorrect
             if ($request->expectsJson()) {
                 return response()->json(['error' => 'Your OTP is not correct'], 400);
             }
             return redirect()->back()->with('error', 'Your OTP is not correct');
-        } elseif ($verificationCode && $now->isAfter($verificationCode->expired_at)) {
-            if ($request->expectsJson()) {
-                return response()->json(['error' => 'Your OTP has been expired'], 401);
-            }
-            return redirect()->route('otp.login')->with('error', 'Your OTP has been expired');
         }
 
         $user = User::whereId($request->user_id)->first();
 
         if ($user) {
-            // Expire The OTP
-            $verificationCode->update([
-                'expired_at' => Carbon::now()
-            ]);
+            // Expire The OTP from Redis
+            $this->otpService->expireOtp($request->user_id);
 
             Auth::login($user);
 
@@ -129,11 +118,13 @@ class AuthOtpController extends Controller
 
     public function registerWithOtp(Request $request)
     {
-        // Validate OTP
-        $verificationCode = VerificationCode::find(Session::get('verification_code_id'));
-        if (!$verificationCode || $verificationCode->otp !== $request->otp) {
+        // Validate OTP using Redis
+        if (!$this->otpService->verifyOtp(Session::get('user_id'), $request->otp)) {
             return redirect()->back()->with('error', 'Invalid OTP');
         }
+
+        // Expire OTP from Redis
+        $this->otpService->expireOtp(Session::get('user_id'));
 
         // Clear session data
         Session::forget(['user_id', 'verification_code_id']);

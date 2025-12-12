@@ -7,7 +7,7 @@ use Illuminate\Foundation\Auth\AuthenticatesUsers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Models\User;
-use App\Models\VerificationCode;
+use App\Services\OtpService;
 use Carbon\Carbon;
 
 class LoginController extends Controller
@@ -31,16 +31,18 @@ class LoginController extends Controller
      * @var string
      */
     protected $redirectTo = '/home';
+    protected $otpService;
 
     /**
      * Create a new controller instance.
      *
      * @return void
      */
-    public function __construct()
+    public function __construct(OtpService $otpService)
     {
         $this->middleware('guest')->except('logout');
         $this->middleware('auth')->only('logout');
+        $this->otpService = $otpService;
     }
 
     /**
@@ -59,7 +61,7 @@ class LoginController extends Controller
         }
 
         // Credentials are valid, now generate OTP instead of logging in
-        $verificationCode = $this->generateOtp($user);
+        $otpData = $this->otpService->generateOtp($user->id);
 
         // Store user_id in session temporarily (not logged in yet)
         $request->session()->put('pending_login_user_id', $user->id);
@@ -67,32 +69,14 @@ class LoginController extends Controller
         if ($request->expectsJson()) {
             return response()->json([
                 'success' => 'OTP sent. Please verify to complete login.',
-                'otp' => (int) $verificationCode->otp,
+                'otp' => (int) $otpData['otp'],
                 'user_id' => $user->id,
-                'expires_at' => $verificationCode->expired_at->toDateTimeString()
+                'expires_at' => $otpData['expired_at']->toDateTimeString()
             ]);
         }
 
         return redirect()->route('otp.verification', ['user_id' => $user->id])
             ->with('success', 'Please enter the OTP to complete login');
-    }
-
-    /**
-     * Generate OTP for user
-     */
-    protected function generateOtp($user)
-    {
-        // Expire all previous OTPs for this user
-        VerificationCode::where('user_id', $user->id)
-            ->where('expired_at', '>', Carbon::now())
-            ->update(['expired_at' => Carbon::now()]);
-
-        // Create a new OTP
-        return VerificationCode::create([
-            'user_id' => $user->id,
-            'otp' => rand(100000, 999999),
-            'expired_at' => Carbon::now()->addMinutes(10)
-        ]);
     }
 }
 

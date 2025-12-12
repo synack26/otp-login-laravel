@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Models\VerificationCode;
+use App\Services\OtpService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Auth\RegistersUsers;
 use Illuminate\Http\Request;
@@ -17,10 +17,12 @@ class RegisterController extends Controller
     use RegistersUsers;
 
     protected $redirectTo = '/home';
+    protected $otpService;
 
-    public function __construct()
+    public function __construct(OtpService $otpService)
     {
         $this->middleware('guest');
+        $this->otpService = $otpService;
     }
 
     public function showRegistrationForm()
@@ -54,8 +56,8 @@ class RegisterController extends Controller
 
         $user = $this->create($request->all());
 
-        // Generate OTP
-        $verificationCode = $this->generateOtp($user->mobile_no);
+        // Generate OTP using Redis
+        $otpData = $this->otpService->generateOtp($user->id);
 
         // Check if the request expects a JSON response
         if ($request->expectsJson()) {
@@ -63,23 +65,11 @@ class RegisterController extends Controller
                 'success' => true,
                 'message' => 'Registration successful. Please verify your mobile number.',
                 'user_id' => $user->id,
-                'otp' => $verificationCode->otp
+                'otp' => $otpData['otp']
             ]);
         }
 
         // Redirect to OTP verification form if not expecting JSON
         return redirect()->route('otp.verification', ['user_id' => $user->id])->with('success', 'Registration successful. Please verify your mobile number.');
-    }
-
-    protected function generateOtp($mobile_no)
-    {
-        $user = User::where('mobile_no', $mobile_no)->first();
-
-        // Generate OTP
-        return VerificationCode::create([
-            'user_id' => $user->id,
-            'otp' => rand(123456, 999999),
-            'expired_at' => Carbon::now()->addMinutes(10)
-        ]);
     }
 }
